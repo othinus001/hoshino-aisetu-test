@@ -1,0 +1,7 @@
+%.o: %.c
+	gcc -c -O0 $^ -o $@ -fPIC
+%.o: %.cpp
+	g++ -c -O0 $^ -o $@ -fPIC
+pcrdwasm.dll: pcrd.o main.o wasm-rt-impl.o
+	g++ $^ --shared --static	 -o $@
+all: pcrdwasm.dll

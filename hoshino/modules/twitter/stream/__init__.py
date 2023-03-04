@@ -35,12 +35,10 @@ async def stream_daemon(stream_func):
             sv.logger.error(f"Error {type(e)} Occurred in twitter stream. Restarting stream in 5s.")
             await asyncio.sleep(5)
 
-
 @sucmd("reload-twitter-stream-daemon", force_private=False, aliases=("重启转推", "重载转推"))
 async def reload_twitter_stream_daemon(session: CommandSession):
     try:
         daemon1.cancel()
-        daemon2.cancel()
         importlib.reload(cfg)
         await start_daemon()
         await session.send("ok")

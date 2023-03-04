@@ -1,8 +1,9 @@
 import base64
 import os
 import time
+from collections import defaultdict
 
-from hoshino import aiorequests, config
+from hoshino import aiorequests, config, util
 
 from .. import chara
 from . import sv
@@ -12,6 +13,11 @@ try:
 except:
     import json
 
+from os.path import dirname, join, exists
+from os import remove
+from asyncio import Lock
+
+querylock = Lock()
 
 logger = sv.logger
 
@@ -110,73 +116,85 @@ def get_true_id(quick_key: str, user_id: int) -> str:
     return quick_key_dic.get(qkey, None)
 
 
-def __get_auth_key():
-    return config.priconne.arena.AUTH_KEY
+from .pcrdapi import callPcrd
+async def do_query(id_list, user_id, region=1, raw=0):
+    defen = id_list
+    key = ''.join([str(x) for x in sorted(defen)]) + str(region)
+    value = int(time.time())
 
+    curpath = dirname(__file__)
+    bufferpath = join(curpath, 'buffer/buffer.json')
 
-async def do_query(id_list, user_id, region=1):
-    id_list = [x * 100 + 1 for x in id_list]
-    header = {
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/78.0.3904.87 Safari/537.36",
-        "authorization": __get_auth_key(),
-    }
-    payload = {
-        "_sign": "a",
-        "def": id_list,
-        "nonce": "a",
-        "page": 1,
-        "sort": 1,
-        "ts": int(time.time()),
-        "region": region,
-    }
-    logger.debug(f"Arena query {payload=}")
-    try:
-        resp = await aiorequests.post(
-            "https://api.pcrdfans.com/x/v1/search",
-            headers=header,
-            json=payload,
-            timeout=10,
-        )
-        res = await resp.json()
-        logger.debug(f"len(res)={len(res)}")
-    except Exception as e:
-        logger.exception(e)
-        return None
+    buffer = {}
+    with open(bufferpath, 'r', encoding="utf-8") as fp:
+        buffer = json.load(fp)
 
-    if res["code"]:
-        logger.error(f"Arena query failed.\nResponse={res}\nPayload={payload}")
-        raise aiorequests.HTTPError(response=res)
+    if (value - buffer.get(key, 0) < 259200) and (exists(join(curpath, f'buffer/{key}.json'))):  # 三天内查询过 直接返回
+        with open(join(curpath, f'buffer/{key}.json'), 'r', encoding="utf-8") as fp:
+            result = json.load(fp)
+    else:  # 尝试查询；若失败，尝试降级，返回缓存结果；若无缓存，寄
+        degrade_result = None
+        if exists(join(curpath, f'buffer/{key}.json')):
+            with open(join(curpath, f'buffer/{key}.json'), 'r', encoding="utf-8") as fp:
+                degrade_result = json.load(fp)
 
-    result = res.get("data", {}).get("result")
-    if result is None:
-        return None
+        isquerysucceed = True
+        id_list = [x * 100 + 1 for x in id_list]
+
+        if querylock.locked():
+            await asyncio.sleep(5)
+        async with querylock:
+            try:
+                res = await callPcrd(id_list, 1, region, 1)
+                logger.debug(f"len(res)={len(res)}")
+            except Exception as e:
+                logger.exception(e)
+                isquerysucceed = False
+                if degrade_result:
+                    result = degrade_result
+                else:
+                    return None
+
+            if res["code"]:
+                isquerysucceed = False
+                if degrade_result:
+                    result = degrade_result
+                else:
+                    raise aiorequests.HTTPError(response=res)
+
+            result = res.get("data", {}).get("result")
+            if result is None:
+                isquerysucceed = False
+                if degrade_result:
+                    result = degrade_result
+                else:
+                    return None
+
+            if isquerysucceed:
+                buffer[key] = value
+
+                with open(bufferpath, 'w', encoding="utf-8") as fp:
+                    json.dump(buffer, fp, ensure_ascii=False, indent=4)
+
+                homeworkpath = join(curpath, f'buffer/{key}.json')
+                with open(homeworkpath, 'w', encoding="utf-8") as fp:
+                    json.dump(result, fp, ensure_ascii=False, indent=4)
+
     ret = []
     for entry in result:
         eid = entry["id"]
         likes = get_likes(eid)
         dislikes = get_dislikes(eid)
-        ret.append(
-            {
-                "qkey": gen_quick_key(eid, user_id),
-                "atk": [
-                    chara.fromid(c["id"] // 100, c["star"], c["equip"])
-                    for c in entry["atk"]
-                ],
-                "def": [
-                    chara.fromid(c["id"] // 100, c["star"], c["equip"])
-                    for c in entry["def"]
-                ],
-                "up": entry["up"],
-                "down": entry["down"],
-                "my_up": len(likes),
-                "my_down": len(dislikes),
-                "user_like": 1
-                if user_id in likes
-                else -1
-                if user_id in dislikes
-                else 0,
-            }
-        )
+        ret.append({
+            "qkey": gen_quick_key(eid, user_id),
+            "atk": [chara.fromid(c["id"] // 100, c["star"], c["equip"]) for c in entry["atk"]],
+            "def": [chara.fromid(c["id"] // 100, c["star"], c["equip"]) for c in entry["def"]],
+            "up": entry["up"],
+            "down": entry["down"],
+            "my_up": len(likes),
+            "my_down": len(dislikes),
+            "user_like": 1 if user_id in likes else -1 if user_id in dislikes else 0,
+        })
 
     return ret
 

@@ -14,7 +14,7 @@ from itertools import zip_longest
 from hoshino import Service, util
 from hoshino.typing import CQEvent
 
-sv = Service('pcr-cherugo', bundle='pcr娱乐', help_='''
+sv = Service('pcr-cherugo', bundle='pcr娱乐',visible=False, help_='''
 [切噜一下] 转换为切噜语
 [切噜～♪切啰巴切拉切蹦切蹦] 切噜语翻译
 '''.strip())
